@@ -13,9 +13,12 @@ import com.lyz.reggie.service.DishService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @RestController
@@ -32,32 +35,37 @@ public class DishController {
     @Autowired
     private CategoryService categoryService;
 
+    @Autowired
+    private RedisTemplate redisTemplate;
+
     @PostMapping
-    public R<String> save(@RequestBody DishDto dishDto){
+    public R<String> save(@RequestBody DishDto dishDto) {
         dishService.saveWithFlavor(dishDto);
+        String key = "dish_" + dishDto.getCategoryId() + "_1";
+        redisTemplate.delete(key);
         return R.success("新增菜品成功");
     }
 
     @GetMapping("/page")
-    public R<Page> page(int page, int pageSize, String name){
+    public R<Page> page(int page, int pageSize, String name) {
         Page<Dish> dishPage = new Page<>(page, pageSize);
         Page<DishDto> dishDtoPage = new Page<>();
 
         LambdaQueryWrapper<Dish> queryWrapper = new LambdaQueryWrapper<>();
 
-        queryWrapper.like(name!=null,Dish::getName,name);
+        queryWrapper.like(name != null, Dish::getName, name);
         queryWrapper.orderByDesc(Dish::getUpdateTime);
 
-        dishService.page(dishPage,queryWrapper);
-        BeanUtils.copyProperties(dishPage,dishDtoPage,"records");
+        dishService.page(dishPage, queryWrapper);
+        BeanUtils.copyProperties(dishPage, dishDtoPage, "records");
 
         List<Dish> records = dishPage.getRecords();
-        List<DishDto> list = records.stream().map((item)->{
+        List<DishDto> list = records.stream().map((item) -> {
             DishDto dishDto = new DishDto();
-            BeanUtils.copyProperties(item,dishDto);
+            BeanUtils.copyProperties(item, dishDto);
             Long categoryId = item.getCategoryId();
             Category category = categoryService.getById(categoryId);
-            if (category!=null){
+            if (category != null) {
                 String categoryName = category.getName();
                 dishDto.setCategoryName(categoryName);
             }
@@ -69,19 +77,22 @@ public class DishController {
     }
 
     @GetMapping("/{id}")
-    public R<DishDto> get(@PathVariable Long id){
+    public R<DishDto> get(@PathVariable Long id) {
         DishDto withFlavorByid = dishService.getWithFlavorByid(id);
         return R.success(withFlavorByid);
     }
 
     @PutMapping
-    public R<String> update(@RequestBody DishDto dishDto){
+    public R<String> update(@RequestBody DishDto dishDto) {
         dishService.updateWithFlavor(dishDto);
+
+        String key = "dish_" + dishDto.getCategoryId() + "_1";
+        redisTemplate.delete(key);
         return R.success("修改成功");
     }
 
     @DeleteMapping
-    public R<String> delete(Long[] ids){
+    public R<String> delete(Long[] ids) {
         for (Long id :
                 ids) {
             DishDto dishDto = dishService.getWithFlavorByid(id);
@@ -91,14 +102,14 @@ public class DishController {
     }
 
     @PostMapping("/status/{status}")
-    public R<String> startSell(@PathVariable int status,Long[] ids){
+    public R<String> startSell(@PathVariable int status, Long[] ids) {
         for (Long id :
                 ids) {
             Dish dish = dishService.getById(id);
             dish.setStatus(status);
             LambdaQueryWrapper<Dish> queryWrapper = new LambdaQueryWrapper<>();
-            queryWrapper.eq(Dish::getId,id);
-            dishService.update(dish,queryWrapper);
+            queryWrapper.eq(Dish::getId, id);
+            dishService.update(dish, queryWrapper);
         }
         return R.success("批量启停成功");
     }
@@ -114,30 +125,39 @@ public class DishController {
     }*/
 
     @GetMapping("/list")
-    public R<List<DishDto>> list(Dish dish){
+    public R<List<DishDto>> list(Dish dish) {
+        List<DishDto> dishDtoist = null;
+        String key = "dish_" + dish.getCategoryId() + "_" + dish.getStatus();
+
+        dishDtoist = (List<DishDto>) redisTemplate.opsForValue().get(key);
+        if (null != dishDtoist){
+            return R.success(dishDtoist);
+        }
+
         LambdaQueryWrapper<Dish> lambdaQueryWrapper = new LambdaQueryWrapper<>();
-        lambdaQueryWrapper.eq(dish!=null,Dish::getCategoryId,dish.getCategoryId());
-        lambdaQueryWrapper.eq(Dish::getStatus,1);
+        lambdaQueryWrapper.eq(dish != null, Dish::getCategoryId, dish.getCategoryId());
+        lambdaQueryWrapper.eq(Dish::getStatus, 1);
         lambdaQueryWrapper.orderByAsc(Dish::getSort).orderByDesc(Dish::getUpdateTime);
         List<Dish> list = dishService.list(lambdaQueryWrapper);
 
-        List<DishDto> dishDtoist = list.stream().map((item)->{
+        dishDtoist = list.stream().map((item) -> {
             DishDto dishDto = new DishDto();
-            BeanUtils.copyProperties(item,dishDto);
+            BeanUtils.copyProperties(item, dishDto);
             Long categoryId = item.getCategoryId();
             Category category = categoryService.getById(categoryId);
-            if (category!=null){
+            if (category != null) {
                 String categoryName = category.getName();
                 dishDto.setCategoryName(categoryName);
             }
             Long id = item.getId();
-            LambdaQueryWrapper<DishFlavor> dishFlavorLambdaQueryWrapper= new LambdaQueryWrapper<>();
-            dishFlavorLambdaQueryWrapper.eq(DishFlavor::getDishId,id);
+            LambdaQueryWrapper<DishFlavor> dishFlavorLambdaQueryWrapper = new LambdaQueryWrapper<>();
+            dishFlavorLambdaQueryWrapper.eq(DishFlavor::getDishId, id);
             List<DishFlavor> dishFlavors = dishFlavorService.list(dishFlavorLambdaQueryWrapper);
             dishDto.setFlavors(dishFlavors);
             return dishDto;
         }).collect(Collectors.toList());
 
+        redisTemplate.opsForValue().set(key,dishDtoist,60l, TimeUnit.MINUTES);
         return R.success(dishDtoist);
     }
 }

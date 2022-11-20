@@ -8,10 +8,12 @@ import lombok.extern.slf4j.Slf4j;
 import com.lyz.reggie.common.R;
 import org.apache.commons.lang.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpSession;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 @RequestMapping("/user")
@@ -21,13 +23,17 @@ public class UserController {
     @Autowired
     private UserService userService;
 
+    @Autowired
+    private RedisTemplate redisTemplate;
+
     @PostMapping ("/sendMsg")
     public R<String> sendMsg(@RequestBody User user, HttpSession session){
         String userPhone = user.getPhone();
         if(StringUtils.isNotEmpty(userPhone)) {
             String code = ValidateCodeUtils.generateValidateCode(4).toString();
             log.info("code={}", code);
-            session.setAttribute(userPhone, code);
+            //session.setAttribute(userPhone, code);
+            redisTemplate.opsForValue().set(userPhone,code,5l, TimeUnit.MINUTES);
             return R.success("手机短信验证码发送成功");
         }
         return R.error("短信发送失败");
@@ -38,9 +44,9 @@ public class UserController {
 
         String phone = map.get("phone").toString();
         String code = map.get("code").toString();
+        String code1 = (String) redisTemplate.opsForValue().get(phone);
 
-        Object sessionAttribute = session.getAttribute(phone);
-        if(null != sessionAttribute && code.equals(sessionAttribute)){
+        if(null != code1 && code.equals(code1)){
             LambdaQueryWrapper<User> userLambdaQueryWrapper = new LambdaQueryWrapper<>();
             userLambdaQueryWrapper.eq(User::getPhone,phone);
 
@@ -52,6 +58,7 @@ public class UserController {
                 userService.save(one);
             }
             session.setAttribute("user",one.getId());
+            redisTemplate.delete(phone);
             return R.success(one);
         }
         return R.error("验证失败");
